@@ -112,6 +112,51 @@ fn firstOk(results: []const rest.Result) !rest.Result {
     return err;
 }
 
+/// `olaf rest query-hashes`: send a client's already-extracted fingerprints
+/// (a JSON body read from stdin) to the endpoint and print the matches like
+/// `olaf query` does. The answer is one query at offset 0, so there are no
+/// per-file index/total columns: they are fixed here (`<stdin>`, total 1).
+pub fn runHashes(allocator: std.mem.Allocator, args: *const types.Args, url: []const u8, body: []const u8) !void {
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    // The fingerprints travel in the request body; only an optional label is a
+    // parameter, and this command does not expose one (the endpoint accepts it).
+    const sent = try rest.lb.send(arena, args.io, url, .{ .endpoint = .query_hashes, .params = .{}, .raw_query = "", .body = body });
+    const ok = try firstOk(sent.results);
+    try printHashes(arena, args.queryFormat(), ok, sent.summary);
+}
+
+/// One CSV block or JSON object for the single query in `r` (offset 0), with
+/// that query's matches from the endpoint's summary.
+fn printHashes(arena: std.mem.Allocator, format: olaf_cli_output.OutputFormat, r: rest.Result, summary: ?json.Value) !void {
+    const data = r.data orelse return error.InvalidResponse;
+    const queries = data.object.get("queries") orelse return error.InvalidResponse;
+    if (queries != .array) return error.InvalidResponse;
+    const all_matches = summaryMatches(summary);
+
+    for (queries.array.items) |q| {
+        const offset_text = numberText(q, "query_offset") orelse "0";
+        const matches = try matchesAt(arena, all_matches, offset_text);
+        const info = olaf_cli_output.QueryInfo{
+            .index = 0,
+            .total = 1,
+            .path = "<stdin>",
+            .offset = std.fmt.parseFloat(f32, offset_text) catch 0,
+        };
+        switch (format) {
+            .csv => try olaf_cli_output.writeQueryCsv(info, matches),
+            .json => try olaf_cli_output.writeQueryJson(arena, info, .{
+                // The client already extracted the fingerprints: there is no audio to time.
+                .fingerprints = @intFromFloat(num(q, "query_fingerprints") orelse 0),
+                .audio_seconds = 0,
+                .cpu_seconds = num(q, "search_time_seconds") orelse 0,
+            }, matches),
+        }
+    }
+}
+
 fn printStore(job: Job, file: AudioFileWithId, index: usize, total: usize, r: rest.Result) !void {
     const data = r.data orelse return error.InvalidResponse;
     const internal_id: u32 = @intFromFloat(num(data, "internal_id") orelse return error.InvalidResponse);

@@ -10,12 +10,13 @@ pub const subcommands = .{
     @import("olaf_cli_cmd_rest_store.zig"),
     @import("olaf_cli_cmd_rest_query.zig"),
     @import("olaf_cli_cmd_rest_has.zig"),
+    @import("olaf_cli_cmd_rest_query_hashes.zig"),
 };
 
 pub const CommandInfo = struct {
     pub const name = "rest";
-    pub const description = "REST API: 'serve' a database, 'serve-lb' a load balancer over several, and 'store' / 'query' / 'has' through one of them.";
-    pub const help = "<serve|serve-lb|store|query|has> ...";
+    pub const description = "REST API: 'serve' a database, 'serve-lb' a load balancer over several, and 'store' / 'query' / 'has' / 'query-hashes' through one of them.";
+    pub const help = "<serve|serve-lb|store|query|has|query-hashes> ...";
     pub const needs_audio_files = false;
     pub const flags = &[_]types.Flag{};
 };
