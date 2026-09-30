@@ -14,6 +14,7 @@ pub const c = @cImport({
     @cInclude("olaf_config.h");
     if (@import("builtin").is_test) @cInclude("olaf_config_parity.h");
     @cInclude("olaf_db.h");
+    @cInclude("olaf_fp_matcher.h");
     @cInclude("olaf_runner.h");
     @cInclude("olaf_stream_processor.h");
 });

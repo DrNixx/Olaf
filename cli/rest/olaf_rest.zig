@@ -3,6 +3,7 @@
 //!
 //!   POST /api/store?identifier=<id>[&force]           body: audio file
 //!   POST /api/query[?identifier=<label>&no_identity_match&fragmented]  body: audio file
+//!   POST /api/query-hashes[?identifier=<label>]       body: JSON {"fingerprints":[{"t1":..,"hash":..}]}
 //!   GET  /api/stats
 //!   GET  /api/healthz
 //!

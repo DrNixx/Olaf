@@ -76,6 +76,19 @@
  	void olaf_fp_matcher_match(Olaf_FP_Matcher * olaf_fp_matcher, struct extracted_fingerprints * olaf_fps);
 	
 	/**
+	 * @brief      Match a single pre-computed fingerprint (t1, hash) with the database.
+	 *
+	 * The caller has already hashed the fingerprint (e.g. a browser client):
+	 * the hash is not recomputed. Results are accumulated like
+	 * olaf_fp_matcher_match and are reported by olaf_fp_matcher_print_results.
+	 *
+	 * @param      olaf_fp_matcher        The matcher.
+	 * @param[in]  queryFingerprintT1     The time of the query fingerprint (t1), in audio blocks.
+	 * @param[in]  queryFingerprintHash   The 64-bit fingerprint hash.
+	 */
+	void olaf_fp_matcher_match_hash(Olaf_FP_Matcher * olaf_fp_matcher, int queryFingerprintT1, uint64_t queryFingerprintHash);
+	
+	/**
 	 * @brief      Print a header for the CSV output.
 	 */
 	void olaf_fp_matcher_print_header(Olaf_FP_Matcher * fp_matcher);

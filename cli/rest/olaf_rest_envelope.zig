@@ -132,7 +132,8 @@ pub fn parse(arena: std.mem.Allocator, body: []const u8, message: *?[]const u8, 
 pub fn summary(arena: std.mem.Allocator, endpoint: Endpoint, results: []const Result, opts: SummaryOptions) !Value {
     return switch (endpoint) {
         .store => storeSummary(arena, results),
-        .query => querySummary(arena, results, opts.max_matches),
+        // query and query-hashes share the same summary shape ("matches").
+        .query, .query_hashes => querySummary(arena, results, opts.max_matches),
         .stats => statsSummary(arena, results),
         .health => healthSummary(arena, results),
     };

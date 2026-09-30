@@ -212,6 +212,13 @@ void olaf_fp_matcher_match_single_fingerprint(Olaf_FP_Matcher * fp_matcher,uint3
 	}
 }
 
+//Match a single pre-computed (t1, hash) pair with the database. Unlike
+//olaf_fp_matcher_match this does not hash a struct fingerprint: the hash comes
+//from the caller (e.g. a browser that extracted it).
+void olaf_fp_matcher_match_hash(Olaf_FP_Matcher * fp_matcher, int queryFingerprintT1, uint64_t queryFingerprintHash){
+	olaf_fp_matcher_match_single_fingerprint(fp_matcher, (uint32_t) queryFingerprintT1, queryFingerprintHash);
+}
+
 void olaf_fp_matcher_set_header(Olaf_FP_Matcher * fp_matcher, const char * header){
 	fp_matcher->header = header;
 }

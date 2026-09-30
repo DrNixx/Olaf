@@ -280,7 +280,7 @@ fn testLogLine(arena: std.mem.Allocator, endpoint: api.Endpoint, identifier: ?[]
     }
     var line: Io.Writer.Allocating = .init(arena);
     try formatRequestLog(&line.writer, .{
-        .method = if (endpoint.takesAudio()) "POST" else "GET",
+        .method = if (endpoint.takesBody()) "POST" else "GET",
         .path = try std.fmt.allocPrint(arena, "/api/{s}", .{endpoint.path()}),
         .identifier = identifier,
         .body_bytes = body_bytes,
@@ -388,8 +388,8 @@ fn handle(gpa: std.mem.Allocator, io: Io, backend: api.Backend, opts: Options, r
     const raw_query = if (q) |i| target[i + 1 ..] else "";
 
     const endpoint = api.Endpoint.route(path) orelse
-        return reject(request, arena, opts, .not_found, "unknown path; use /api/store, /api/query, /api/stats or /api/healthz");
-    const wanted: http.Method = if (endpoint.takesAudio()) .POST else .GET;
+        return reject(request, arena, opts, .not_found, "unknown path; use /api/store, /api/query, /api/query-hashes, /api/stats or /api/healthz");
+    const wanted: http.Method = if (endpoint.takesBody()) .POST else .GET;
     if (method != wanted and !(wanted == .GET and method == .HEAD)) {
         return reject(request, arena, opts, .method_not_allowed, try std.fmt.allocPrint(arena, "/api/{s} expects {s}", .{ endpoint.path(), @tagName(wanted) }));
     }
@@ -400,8 +400,8 @@ fn handle(gpa: std.mem.Allocator, io: Io, backend: api.Backend, opts: Options, r
     };
 
     var body: []const u8 = "";
-    if (endpoint.takesAudio()) {
-        const too_large = try std.fmt.allocPrint(arena, "audio larger than rest_max_body_mb ({d} bytes)", .{opts.max_body_bytes});
+    if (endpoint.takesBody()) {
+        const too_large = try std.fmt.allocPrint(arena, "request body larger than rest_max_body_mb ({d} bytes)", .{opts.max_body_bytes});
         if (request.head.content_length) |len| if (len > opts.max_body_bytes) {
             return reject(request, arena, opts, .payload_too_large, too_large);
         };
@@ -412,7 +412,14 @@ fn handle(gpa: std.mem.Allocator, io: Io, backend: api.Backend, opts: Options, r
             error.StreamTooLong => return respond(request, arena, opts, .payload_too_large, false, .{ .message = too_large }),
             else => return false,
         };
-        if (body.len == 0) return respond(request, arena, opts, .bad_request, true, .{ .message = "empty body: send the audio file as the request body" });
+        if (body.len == 0) {
+            const empty_msg = switch (endpoint.bodyKind()) {
+                .audio => "empty body: send the audio file as the request body",
+                // takesBody() guarantees a non-.none kind here.
+                else => "empty body: send {\"fingerprints\":[...]}",
+            };
+            return respond(request, arena, opts, .bad_request, true, .{ .message = empty_msg });
+        }
     }
 
     const results = backend.handle(arena, io, .{ .endpoint = endpoint, .params = p, .raw_query = raw_query, .body = body }) catch |err| blk: {
@@ -486,7 +493,8 @@ pub fn formatRequestLog(w: *Io.Writer, e: RequestLog) !void {
             try w.print("{s} on {s}", .{ if (std.mem.eql(u8, action, "skip")) "skipped (already stored)" else "stored", stringField(s, "endpoint") orelse "?" });
             if (fieldOf(s, "internal_id")) |v| if (envelope.number(v)) |id| try w.print(" (internal_id {d})", .{@as(u64, @intFromFloat(id))});
         },
-        .query => {
+        // query and query-hashes share the same summary shape ("matches").
+        .query, .query_hashes => {
             if (counts) try w.writeAll(", ");
             const matches = fieldOf(s, "matches");
             const n: usize = if (matches) |m| (if (m == .array) m.array.items.len else 0) else 0;

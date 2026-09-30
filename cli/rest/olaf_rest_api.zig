@@ -10,6 +10,8 @@ const Params = @import("olaf_rest_params.zig").Params;
 pub const Endpoint = enum {
     store,
     query,
+    /// Match pre-computed (t1, hash) fingerprints the client already extracted.
+    query_hashes,
     stats,
     health,
 
@@ -18,14 +20,26 @@ pub const Endpoint = enum {
         return switch (e) {
             .store => "store",
             .query => "query",
+            .query_hashes => "query-hashes",
             .stats => "stats",
             .health => "healthz",
         };
     }
 
-    /// store and query take audio as the POST body; stats and health are GETs.
-    pub fn takesAudio(e: Endpoint) bool {
-        return e == .store or e == .query;
+    /// What the request body is: store/query take audio, query-hashes JSON.
+    pub const Body = enum { none, audio, json };
+
+    pub fn bodyKind(e: Endpoint) Body {
+        return switch (e) {
+            .store, .query => .audio,
+            .query_hashes => .json,
+            .stats, .health => .none,
+        };
+    }
+
+    /// True when the endpoint expects a request body (POST).
+    pub fn takesBody(e: Endpoint) bool {
+        return e.bodyKind() != .none;
     }
 
     /// The endpoint for a request path, or null. Trailing slashes are ignored.
@@ -87,6 +101,7 @@ pub const Backend = struct {
 test "route" {
     try std.testing.expectEqual(Endpoint.store, Endpoint.route("/api/store").?);
     try std.testing.expectEqual(Endpoint.query, Endpoint.route("/api/query/").?);
+    try std.testing.expectEqual(Endpoint.query_hashes, Endpoint.route("/api/query-hashes").?);
     try std.testing.expectEqual(Endpoint.health, Endpoint.route("/api/healthz").?);
     try std.testing.expectEqual(Endpoint.health, Endpoint.route("/api/healtz").?);
     try std.testing.expectEqual(Endpoint.stats, Endpoint.route("/api/stats").?);

@@ -24,6 +24,8 @@ fn allowed(endpoint: Endpoint, name: []const u8) bool {
     const names: []const []const u8 = switch (endpoint) {
         .store => &.{ "identifier", "force" },
         .query => &.{ "identifier", "no_identity_match", "fragmented" },
+        // query-hashes takes only an optional request label.
+        .query_hashes => &.{ "identifier" },
         .stats, .health => &.{},
     };
     for (names) |n| if (std.mem.eql(u8, n, name)) return true;
@@ -131,9 +133,15 @@ test "parse store and query parameters" {
     const q = try parse(arena, .query, "no_identity_match=true&fragmented=0&identifier=q", &msg);
     try std.testing.expect(q.no_identity_match and !q.fragmented);
 
+    // query-hashes takes only an optional label; store/query flags are rejected.
+    const qh = try parse(arena, .query_hashes, "identifier=fingerprints%2042", &msg);
+    try std.testing.expectEqualStrings("fingerprints 42", qh.identifier.?);
+    _ = try parse(arena, .query_hashes, "", &msg); // no identifier is fine here
+
     try std.testing.expectError(error.InvalidParameter, parse(arena, .store, "force=1", &msg));
     try std.testing.expectError(error.InvalidParameter, parse(arena, .query, "force=1", &msg));
     try std.testing.expectError(error.InvalidParameter, parse(arena, .query, "fragmented=maybe", &msg));
+    try std.testing.expectError(error.InvalidParameter, parse(arena, .query_hashes, "force=1", &msg));
     try std.testing.expectError(error.InvalidParameter, parse(arena, .stats, "x", &msg));
     _ = try parse(arena, .stats, "", &msg);
 }

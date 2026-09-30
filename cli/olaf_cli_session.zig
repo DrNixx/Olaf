@@ -385,6 +385,49 @@ pub fn queryCollectWithStats(allocator: std.mem.Allocator, raw_audio_path: []con
     return .{ .matches = try list.toOwnedSlice(allocator), .stats = run_stats };
 }
 
+/// A pre-computed fingerprint sent by a client (e.g. a browser): the time of
+/// the first event point (t1), in audio blocks, and the 64-bit hash.
+pub const QueryHash = struct {
+    t1: i32,
+    hash: u64,
+};
+
+/// Match pre-computed (t1, hash) fingerprints against the database, like a
+/// one-shot `query` but without audio: the caller already extracted them.
+/// Results are collected into matches; the caller frees them with
+/// `freeMatches`.
+pub fn queryHashes(allocator: std.mem.Allocator, config: *const Config, hashes: []const QueryHash) ![]Match {
+    var session = try Session.init(allocator, config);
+    defer session.deinit();
+    try session.ensureDb();
+
+    // One-shot: report everything at the end, never age matches out.
+    session.config.ptr.printResultEvery = 0;
+    session.config.ptr.keepMatchesFor = 0;
+
+    const db = c.olaf_db_new(session.config.db_folder.ptr, true) orelse return core.constructorError(error.CoreInitializationFailed);
+    defer c.olaf_db_destroy(db);
+
+    const matcher = c.olaf_fp_matcher_new(session.config.ptr, db, resultCallback) orelse return core.constructorError(error.CoreInitializationFailed);
+    defer c.olaf_fp_matcher_destroy(matcher);
+
+    var list: std.ArrayList(Match) = .empty;
+    errdefer {
+        for (list.items) |m| allocator.free(m.path);
+        list.deinit(allocator);
+    }
+    var sink = Sink{ .target = .{ .collect = .{ .allocator = allocator, .list = &list } } };
+    const previous = current_sink;
+    current_sink = &sink;
+    defer current_sink = previous;
+
+    for (hashes) |h| c.olaf_fp_matcher_match_hash(matcher, h.t1, h.hash);
+    c.olaf_fp_matcher_print_results(matcher);
+    if (sink.err) |e| return e;
+
+    return list.toOwnedSlice(allocator);
+}
+
 pub const DeleteResult = union(enum) {
     /// Deleted; the number of fingerprints removed.
     deleted: usize,

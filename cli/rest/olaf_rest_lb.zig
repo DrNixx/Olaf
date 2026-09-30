@@ -157,11 +157,15 @@ fn forward(arena: std.mem.Allocator, io: Io, base: []const u8, req: api.Request)
 
     const res = client.fetch(.{
         .location = .{ .url = url },
-        .method = if (req.endpoint.takesAudio()) .POST else .GET,
-        .payload = if (req.endpoint.takesAudio()) req.body else null,
+        .method = if (req.endpoint.takesBody()) .POST else .GET,
+        .payload = if (req.endpoint.takesBody()) req.body else null,
         .response_writer = &body.writer,
         .keep_alive = false,
-        .headers = .{ .content_type = if (req.endpoint.takesAudio()) .{ .override = "application/octet-stream" } else .default },
+        .headers = .{ .content_type = switch (req.endpoint.bodyKind()) {
+            .audio => .{ .override = "application/octet-stream" },
+            .json => .{ .override = "application/json" },
+            .none => .default,
+        } },
     }) catch |err| {
         if (err == error.OutOfMemory) return error.OutOfMemory;
         return .{ .results = try one(arena, .failure(base, 502, try std.fmt.allocPrint(arena, "backend unreachable: {s}", .{@errorName(err)}))), .unreachable_backend = true };

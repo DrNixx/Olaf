@@ -40,6 +40,7 @@ pub const LocalBackend = struct {
             error.OutOfMemory => return err,
             error.FFmpegFailed, error.AudioOpenFailed => .failure(endpoint_name, 422, "could not decode the audio (ffmpeg failed)"),
             error.FileNotFound => .failure(endpoint_name, 500, "ffmpeg or ffprobe not found"),
+            error.InvalidFingerprints => .failure(endpoint_name, 400, "invalid JSON: expected {\"fingerprints\":[{\"t1\":<int>,\"hash\":<int>}]}"),
             else => .failure(endpoint_name, 500, @errorName(err)),
         };
         return results;
@@ -57,6 +58,12 @@ pub const LocalBackend = struct {
                 self.workers.waitUncancelable(io);
                 defer self.workers.post(io);
                 break :blk if (req.endpoint == .store) try self.store(arena, io, req) else try self.query(arena, io, req);
+            },
+            // Pre-computed fingerprints from the client body; no ffmpeg/extraction.
+            .query_hashes => blk: {
+                self.workers.waitUncancelable(io);
+                defer self.workers.post(io);
+                break :blk try self.queryHashes(arena, req);
             },
         };
         return .{ .endpoint = endpoint_name, .status = 200, .data = data };
@@ -155,6 +162,44 @@ pub const LocalBackend = struct {
             .cpu_seconds = q.stats.cpu_seconds,
         }, q.matches);
         return q.stats.audio_seconds;
+    }
+
+    /// Like `olaf query --format json`, but the fingerprints come from the
+    /// client (POST body) instead of decoded audio: no ffmpeg, no extraction.
+    fn queryHashes(self: *LocalBackend, arena: std.mem.Allocator, req: rest.Request) !json.Value {
+        const label = req.params.identifier orelse "fingerprints";
+        // Client input is parsed with default options so t1/hash are integers;
+        // a malformed body or wrong shape is error.InvalidFingerprints (400).
+        const parsed = json.parseFromSliceLeaky(json.Value, arena, req.body, .{}) catch return error.InvalidFingerprints;
+        const array = if (parsed == .object) parsed.object.get("fingerprints") else null;
+        if (array == null or array.? != .array) return error.InvalidFingerprints;
+
+        var list: std.ArrayList(olaf_cli_session.QueryHash) = .empty;
+        for (array.?.array.items) |item| {
+            if (item != .object) return error.InvalidFingerprints;
+            const t1_value = item.object.get("t1") orelse return error.InvalidFingerprints;
+            const hash_value = item.object.get("hash") orelse return error.InvalidFingerprints;
+            if (t1_value != .integer or hash_value != .integer) return error.InvalidFingerprints;
+            if (hash_value.integer < 0) return error.InvalidFingerprints;
+            try list.append(arena, .{
+                .t1 = std.math.cast(i32, t1_value.integer) orelse return error.InvalidFingerprints,
+                .hash = @intCast(hash_value.integer),
+            });
+        }
+
+        const matches = try olaf_cli_session.queryHashes(arena, self.config, list.items);
+        defer olaf_cli_session.freeMatches(arena, matches);
+
+        var out: Io.Writer.Allocating = .init(arena);
+        try out.writer.writeAll("{\"queries\":[");
+        // No audio was decoded here: report the fingerprint count and zero time.
+        try olaf_cli_output.formatQueryJson(&out.writer, .{ .index = 0, .total = 1, .path = label, .offset = 0 }, .{
+            .fingerprints = list.items.len,
+            .audio_seconds = 0,
+            .cpu_seconds = 0,
+        }, matches);
+        try out.writer.writeAll("]}");
+        return json.parseFromSliceLeaky(json.Value, arena, out.written(), rest.envelope.parse_options);
     }
 };
 
