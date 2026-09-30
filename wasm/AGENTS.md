@@ -1,69 +1,65 @@
-# AGENTS.md
+# AGENTS.md (wasm/)
 
-`wasm/` — это браузерный фронтенд Olaf, библиотеки аудиофингерпринтинга на C/Zig.
-В этом чекауте присутствует только фронтенд: нативные исходники (`src/`, `build.zig`),
-`dataset/` и git-репозиторий находятся в родительском проекте и здесь **отсутствуют**.
-Файлы ссылаются на `../dataset/queries/…`, `src/olaf_fp_ref_mem.h` и `zig build …`,
-которых в этом дереве нет — не «чините» эти пути, они относятся к родительскому репозиторию.
+`wasm/` — браузерный фронтенд Olaf, библиотеки аудиофингерпринтинга на C/Zig.
 
-## Нет сборки, нет пакетов
+**Полный репозиторий присутствует.** Это не изолированный чекаут: рядом лежат нативные исходники
+(`src/`, `build.zig`) и `dataset/`. Бинарник `js/olaf.wasm` собирается командой **`zig build web`** (Zig 0.16) в корне репозитория — она обновляет именно этот файл. Не редактируйте бинарники вручную; пересобирайте из источника.
 
-- `package.json` существует только для установки `"type": "module"`; зависимостей и скриптов
-  нет. Не запускайте `npm install` / `npm test` / `npm run …`.
-- `js/olaf.wasm` (настоящий WASM-бинарник) собирается командой `zig build web` в корне
-  Zig-репозитория. `js/libsamplerate.worklet.js` — вендорный минифицированный бандл
-  `@alexanderolsen/libsamplerate-js` 2.1.2 (~2 МБ, одна строка). Ни один из них не
-  редактируйте вручную; пересобирайте/заменяйте в источнике.
+## Нет npm-сборки, есть Zig + node-тесты
 
-## Тесты
+- `package.json` существует только для установки `"type": "module"`; зависимостей и скриптов нет — не запускайте `npm install / test / run`.
+- Сборка wasm: **`zig build web`** (корень репозитория) → обновляет `wasm/js/olaf.wasm`.
+- Проверки выполняются node'ом напрямую, без npm.
 
-- Node-интеграционный тест — прогоняет `js/olaf.wasm` через тот же загрузчик, что и
-  AudioWorklet:
-  `node olaf_wasm_test.mjs`   (запускать из `wasm/`; либо `node wasm/olaf_wasm_test.mjs`).
-  Требует `ffmpeg` в `PATH` и запрос `../dataset/queries/1051039_34s-54s.mp3`
-  (скачивается через `zig build test`). Проверяет: ссылка **1051039** совпадает,
-  детерминированный LCG-шум даёт ноль совпадений, и каждая event point равна своему
-  спектральному бину на своём блоке/частоте. При провале — код возврата 1 + JSON `FAIL …`.
-- Браузерные тесты `test.html`, `spectrogram.html`, `resample.html` требуют настоящего
-  HTTP-сервера **с корнем в родительском проекте** (не `file://`): они используют ES-модули,
-  AudioWorklet и абсолютные URL `/dataset/…`. Поднимите сервер от родительского корня и
-  откройте, например, `/wasm/test.html`.
-- `test.html` и `spectrogram.html` публикуют машинно-читаемое состояние для харнесса
-  chrome-devtools-MCP через `evaluate_script`: `window.__olaf_done`, `window.__olaf_error`,
-  а также `__olaf_results` (test.html) / `__olaf_matches` + `__olaf_alignment`
-  (spectrogram.html). Опрашивайте их вместо парсинга DOM.
-- `olaf_spectrogram.js` требует **WebGL2**.
+## ABI wasm (`js/olaf_wasm.js`) — единственный источник истины
 
-## Связка (не нарушайте порядок загрузки)
+Обработку ABI меняйте только в `js/olaf_wasm.js` (общий для AudioWorklet и node-теста). Текущий набор:
+- экспорты: `olaf_fingerprint_match`, `olaf_wasm_describe`, `olaf_wasm_set_visualize`, **`olaf_wasm_set_extract`**, **`olaf_wasm_set_profile`**, `malloc`/`free`, `memory`;
+- импортируемые колбэки (`env`): `olaf_fp_matcher_callback`, `olaf_spectrum_callback`, `olaf_event_point_callback`, и теперь — **`olaf_fp_callback(timeIndex1, hashLo, hashHi)`** (настоящие отпечатки `(t1, hash)`, см. `src/olaf_wasm.c:78`).
+- Профили: по умолчанию **`demo` = `olaf_config_esp_32()`**; опция `profile:"server"` вызывает `set_profile(1)` → **`olaf_config_default()`** (step 128, 3 EPs per FP), совпадает с серверным индексом. Выбор профиля фиксируется до инициализации (`src/olaf_wasm.c:85`).
+- Режим экстракции отпечатков включается `set_extract(1)`; тогда встроенный матчер пропускается, а каждый fingerprint уходит в JS через `onFingerprint({ time_index, hash })` (см. `.kilo/docs/olaf-mic-fingerprint-to-external-server.md`, §4).
+
+## Новые файлы и тесты (текущее состояние)
+
+Клиентская отправка настоящих отпечатков на внешний сервер:
+- `js/olaf_windows.js` — режет накопленные отпечатки в скользящие окна.
+- `js/olaf_ingest.js` — микрофон → Olaf (`profile:"server"`, экстракция) → скользящие окна **10 с / hop 5 с** → `POST <endpoint>` телом `{ type, sessionId, grid, wallClockMs, fingerprints:[{t1,hash}] }`.
+- `feasibility.html` — страница-пробник (endpoint по умолчанию `http://localhost:8920/api/query-hashes`).
+
+Инструменты и тесты (`node …`, запускать из корня репозитория):
+- `olaf_wasm_test.mjs` — эталонный node-тест ABI (референс id 1051039).
+- **`olaf_fp_extract_test.mjs`** — проверка экстракции отпечатков `(t1, hash)` из wasm.
+- **`olaf_windows_test.mjs`** — проверка нарезки окон (`js/olaf_windows.js`).
+- `tools/fp_compat_check.mjs` — детерминированная (без LMDB) проверка совместимости хэшей с серверным индексом: hash overlap, постоянный сдвиг `t1`, симуляция матчера.
+- `tools/query_hashes_probe.mjs <baseUrl> [audio]` — живой HTTP e2e на боевом Linux-сервере (LMDB под Windows падает на `mdb_env_open`).
+
+## Команды проверки
+
+```bash
+zig build web                                  # пересобрать wasm/js/olaf.wasm (Zig 0.16)
+node wasm/olaf_wasm_test.mjs                   # эталонный ABI-тест (нужен ffmpeg + dataset)
+node wasm/olaf_fp_extract_test.mjs             # экстракция отпечатков из wasm
+node wasm/olaf_windows_test.mjs                # нарезка скользящих окон
+node wasm/tools/fp_compat_check.mjs            # совместимость хэшей с сервером (без LMDB, детерминированно)
+```
+
+## Связка AudioWorklet (не нарушайте порядок загрузки)
 
 - `js/olaf.js` — главный поток: `fetch("olaf.wasm")` (worklet не может `fetch`) плюс
-  `audioWorklet.addModule("olaf_processor.js")`, и передаёт байты wasm через
-  `processorOptions.wasmBytes`.
-- `js/olaf_processor.js` — AudioWorklet (`olaf-processor`): ресемплирует вход в 16 кГц
-  с помощью libsamplerate, затем вызывает `olaf.match()`; отчитывается через порт
-  сообщениями `{type:"status"|"grid"|"spectrum"}` или объектом совпадения. Вывод `console`
-  из worklet ненадёжен — всё идёт через порт.
-- `js/olaf_wasm.js` — единственный источник истины для ABI wasm, общий для worklet и
-  node-теста: WASI-шим, колбэки `env` (`olaf_fp_matcher_callback`, `olaf_spectrum_callback`,
-  `olaf_event_point_callback`), экспорты (`olaf_fingerprint_match`, `olaf_wasm_describe`,
-  `olaf_wasm_set_visualize`, `malloc`/`free`, `memory`). Обработку ABI меняйте только здесь.
-- `js/resample_processor.js` — минимальный автономный worklet `resample-processor`,
-  используемый только в `resample.html`; не связан с worklet фингерпринтинга.
-- `js/olaf_spectrogram.js` — рендерер WebGL2 для собственных спектров и event points Olaf.
+  `audioWorklet.addModule("olaf_processor.js")`, передаёт байты wasm через `processorOptions.wasmBytes`.
+- `js/olaf_processor.js` — AudioWorklet (`olaf-processor`): ресемплирует вход в 16 кГц с помощью libsamplerate, затем вызывает Olaf; отчитывается через порт сообщениями `{type:"status"|"grid"|"spectrum"|...}` или объектом совпадения. Вывод `console` из worklet ненадёжен — всё идёт через порт.
+- `js/olaf_wasm.js` — единственный источник истины для ABI wasm (см. выше). Обработку ABI меняйте только здесь.
+- `js/resample_processor.js` — минимальный автономный worklet, используется только в `resample.html`.
+- `js/olaf_spectrogram.js` — рендерер WebGL2 собственных спектров и event points Olaf (требует **WebGL2**).
 
 ## Подводные камни
 
 - Аудио — моно 16 кГц; `process()` получает рендер-кванты по 128 сэмплов. Берите свежий
-  `new Float32Array(memory.buffer, …)` view на каждом вызове — память wasm может вырасти и
-  отсоединить прежние view.
-- `TextDecoder` не гарантирован в `AudioWorkletGlobalScope`; `olaf_wasm.js` откатывается на
-  побайтовый цикл.
-- Захват микрофона обязан отключать voice processing
-  (`echoCancellation/noiseSuppression/autoGainControl: false`) — он искажает спектральные
-  пики, по которым строится фингерпринт (см. `index.html`, `spectrogram.html`).
-- Референс-трек скомпилирован в wasm; он ровно один (id 1051039).
+  `new Float32Array(memory.buffer, …)` view на каждом вызове — память wasm может вырасти и отсоединить прежние view.
+- `TextDecoder` не гарантирован в `AudioWorkletGlobalScope`; `olaf_wasm.js` откатывается на побайтовый цикл.
+- Захват микрофона обязан отключать voice processing (`echoCancellation/noiseSuppression/autoGainControl: false`) — он искажает спектральные пики (см. `index.html`, `spectrogram.html`).
+- Референс-трек скомпилирован в wasm; эталонный id 1051039 для node/браузерных тестов.
 
 ## Стиль
 
-Табы для отступов, двойные кавычки и комментарии, объясняющие *почему*, а не пересказывающие
-код (см. `js/olaf_spectrogram.js`). Следуйте стилю окружающего файла.
+Табы для отступов, двойные кавычки и комментарии, объясняющие *почему*, а не пересказывающие код (см. `js/olaf_spectrogram.js`). Следуйте стилю окружающего файла.

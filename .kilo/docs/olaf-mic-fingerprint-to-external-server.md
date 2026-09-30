@@ -1,8 +1,10 @@
 # Olaf: микрофон → извлечение отпечатков → мэтчинг на внешнем сервере
 
-> Конспект feasibility-фазы фронтенда `wasm/` (чекаут `D:\Workspace\Friday\acr\olaf\wasm`).
-> Фаза завершена, реализация остановлена по указанию владельца: планируется переезд
-> в проект с полным репозиторием Olaf (нативные `src/`, `build.zig`, `dataset/`).
+> Конспект, приведённый к текущему состоянию (ветка `wasm_fp_extractor`, полный репозиторий).
+> Фаза feasibility была завершена в изолированном чекауте фронтенда; затем работа переехала
+> в проект с полным репозиторием Olaf (`src/`, `build.zig`, `dataset/`) и реализована по **Пути A**
+> (настоящие отпечатки из wasm) + новый REST-эндпоинт на сервере. Ниже — история feasibility,
+> затем фактическая реализация и статус проверок.
 
 ## 1. Цель
 
@@ -12,170 +14,142 @@
 2. извлечь пару `(t1, hash)` — отпечаток (fingerprint);
 3. отправить её на мэтчинг на внешний сервер.
 
-Задача сформулирована в два этапа: сначала определить возможность «в принципе»,
-затем реализовывать.
+Задача формулировалась в два этапа: сначала определить возможность «в принципе», затем реализовывать.
 
-## 2. Что установлено (факты с доказательствами)
+## 2. История feasibility-фазы (исходные факты)
 
-### 2.1. Захват микрофона и прогон Olaf уже работают
+> Раздел сохранён как история первоначального исследования; часть пунктов ниже **устарела**
+> после переезда в полный репозиторий и помечена явно.
 
-- `index.html:118-152` и `spectrogram.html:178-186` реализуют полный путь:
-  `getUserMedia` (с принудительно выключенным voice processing) →
-  `createOlafNode()` → AudioWorklet `olaf-processor` → ресемплинг в 16 кГц →
-  `olaf.match()`.
-- Обязательные constraints микрофона (voice processing искажает спектральные пики):
-  `{ channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false }`.
+### 2.1. Захват микрофона и прогон Olaf уже работали
 
-### 2.2. Экстрактора отпечатков в текущем `js/olaf.wasm` НЕТ
+- `index.html:118-152` и `spectrogram.html:178-186` реализуют путь:
+  `getUserMedia` (voice processing принудительно выключен) → `createOlafNode()` → AudioWorklet
+  `olaf-processor` → ресемплинг в 16 кГц → `olaf.match()`.
+- Обязательные constraints микрофона (`echoCancellation/noiseSuppression/autoGainControl: false`) —
+  voice processing искажает спектральные пики, по которым строится фингерпринт.
 
-Точный список экспортов (получен инстанцированием модуля в Node, не по строкам в бинаре):
+### 2.2. В старом wasm не было экстрактора отпечатков (устарело)
 
-```
-_initialize
-free
-malloc
-memory
-olaf_fingerprint_match
-olaf_wasm_describe
-olaf_wasm_set_visualize
-```
+В исходном `js/olaf.wasm` экспортировались только `_initialize`, `free`, `malloc`, `memory`,
+`olaf_fingerprint_match`, `olaf_wasm_describe`, `olaf_wasm_set_visualize`; импортируемые колбэки —
+`olaf_fp_matcher_callback`, `olaf_spectrum_callback`, `olaf_event_point_callback`. Функции, отдающей пару
+`(t1, hash)`, в ABI **не было**. Это и есть причина, по которой feasibility-фаза рассматривала Пути A/B/C.
 
-Импортируемые из JS колбэки (`env`):
+### 2.3. Апстримный экстрактор существовал, но не был проброшен (устарело)
 
-```
-olaf_fp_matcher_callback   // результаты мэтчинга против вшитой референс-базы
-olaf_spectrum_callback     // магнитуды FFT по блокам (только visualize)
-olaf_event_point_callback  // (timeIndex, frequencyBin, magnitude) (только visualize)
-```
+В `src/olaf_fp_extractor.h/.c` — `struct fingerprint`, `olaf_fp_extractor_extract(...)`,
+`olaf_fp_extractor_hash(f)`; кастомный мост `src/olaf_wasm.c` эти функции наружу не выставлял. **Сейчас** они проброшены (см. §4).
 
-Функции, отдающей пару `(t1, hash)` или список fingerprint-структур, в ABI **нет**.
+### 2.4. Чего не было в исходном чекауте (устарело)
 
-### 2.3. Апстрим-экстрактор существует, но не проброшен в wasm
+В изолированном фронтенд-чекауте отсутствовали `src/`, `build.zig` и `dataset/`. **Сейчас** работа ведётся
+в полном репозитории на ветке `wasm_fp_extractor`: нативные исходники, `build.zig` и `zig build web` присутствуют.
 
-В репозитории `JorenSix/Olaf` есть `src/olaf_fp_extractor.h` / `.c`:
-
-- `struct fingerprint { frequencyBin1, timeIndex1, magnitude1, frequencyBin2, timeIndex2,
-  magnitude2, frequencyBin3, timeIndex3, magnitude3 }` — сочетание 2–3 event point
-  (третий может быть нулевым → фолбэк на 2 точки);
-- `olaf_fp_extractor_extract(extractor, eventPoints, audioBlockIndex)` — формирует отпечатки;
-- `olaf_fp_extractor_hash(struct fingerprint f) -> uint64_t` — хэш отпечатка (Jenkins-хэш).
-
-Однако кастомный wasm-мост (`src/olaf_wasm.c`) эти функции наружу не выставляет —
-в браузер отдан только режим match + visualize. Именно поэтому текущий
-`js/olaf.wasm` не умеет отдавать отпечатки.
-
-### 2.4. Чего нет в этом чекауте
-
-- Нет нативных исходников `src/`, `build.zig` → `zig build web` отсюда не выполнить.
-- Нет `dataset/` (запрос `../dataset/queries/1051039_34s-54s.mp3` отсутствует) →
-  оффлайн-тест `node olaf_wasm_test.mjs` здесь не запускается.
-- Есть только `wasm/`; пути `../dataset/…` и `src/…` относятся к родительскому
-  репозиторию и «чинить» их не нужно.
-
-## 3. Вывод (feasibility)
+## 3. Вывод feasibility (исторический)
 
 | Подзадача | Возможность | Основание |
 |---|---|---|
-| Извлечь звук с микрофона | ✅ да | `index.html:118-152`, `spectrogram.html:178-186` |
-| Ресемплинг в 16 кГц + прогон Olaf | ✅ да | worklet `olaf-processor` + `libsamplerate` |
+| Извлечь звук с микрофона | ✅ да | AudioWorklet + libsamplerate |
+| Ресемплинг в 16 кГц + прогон Olaf | ✅ да | worklet `olaf-processor` |
 | Отправить данные на внешний сервер | ✅ да | реализованный пробник + smoke-тест |
-| Сформировать `(t1, hash)` в браузере | ❌ нет на текущем `olaf.wasm` | нет экспорта экстрактора (п. 2.2) |
+| Сформировать `(t1, hash)` в браузере | ❌ нет **на старом** wasm → решено Пути A (см. §4) | не было экспорта экстрактора (§2.2) |
 
-**Итог:** цель достижима, но не целиком на текущем wasm. Единственная реально
-извлекаемая наружу полезная нагрузка — **event points**
-(`{time_index, frequency_bin, magnitude}`, колбэк `olaf_event_point_callback`,
-приходит в главный поток в сообщении `{type:"spectrum"}` при
-`createOlafNode(context, { visualize: true })`). Это **вход** для спаривания
-в отпечатки, а не сами хэши. `spectrogram.html` уже рисует эти точки.
+Итог feasibility: цель достижима; единственная реально извлекаемая наружу полезная нагрузка на том
+старом бинаре — event points (`olaf_event_point_callback`). Это вход для спаривания в отпечатки, а не сами хэши. **Дальше реализован Путь A** (экспорт настоящих отпечатков), что сделало отправку EP-батчей ненужной.
 
-## 4. Пути достижения цели
+## 4. Реализация — текущее состояние (Путь A выбран и выполнен)
 
-### Путь A — пробросить экстрактор в wasm (правильный долгосрочно)
+### 4.1. Настоящие отпечатки из wasm (`src/olaf_wasm.c`)
 
-- Правка нативного моста `src/olaf_wasm.c`: добавить экспорт/колбэк, например
-  `olaf_wasm_set_extract(1)` + `olaf_fp_callback(hash, timeIndex1, frequencyBin1, …)`,
-  вызываемый из пути `olaf_fp_extractor_extract`.
-- Пересборка: `zig build web` → новый `js/olaf.wasm`.
-- Плюс: настоящие отпечатки прямо в браузере, минимум данных на провод.
-- Минус: **в этом чекауте невыполнимо** — нужны нативные `src/` и `build.zig`.
+Выбран **Путь A**: `src/olaf_wasm.c` отдаёт настоящие отпечатки `(t1, hash)` через:
 
-### Путь B — портировать `olaf_fp_extractor.c` в JS
+- импортируемый колбэк
+  ```c
+  __attribute__((import_module("env"), import_name("olaf_fp_callback")))
+  void olaf_fp_callback(int timeIndex1, uint32_t hashLo, uint32_t hashHi);   // src/olaf_wasm.c:78
+  ```
+- экспорт `__attribute__((export_name("olaf_wasm_set_extract")))` → `void olaf_wasm_set_extract(int on)` (`src/olaf_wasm.c:114`).
 
-- Спаривать event points в отпечатки на клиенте по логике апстрима
-  (правила pairing + `olaf_fp_extractor_hash`).
-- Плюс: настоящие хэши без пересборки wasm (все поля EP уже доступны).
-- Минус: нужно точно повторить compile-time конфиг (`olaf_config_wasm`) и
-  сопровождать ревизию апстрима; риск расхождения с индексом.
+При включённом режиме экстракции встроенный матчер пропускается, а каждый сформированный отпечаток
+вызывает `olaf_fp_callback(f.timeIndex1, (uint32_t)hash, (uint32_t)(hash >> 32))` (`src/olaf_wasm.c:217`).
 
-### Путь C — формировать `(t1, hash)` на внешнем сервере (рекомендуется)
+JS-ABI в `wasm/js/olaf_wasm.js`: опция `onFingerprint`, колбэк
+```js
+olaf_fp_callback(timeIndex1, hashLo, hashHi) { onFingerprint?.({ time_index: timeIndex1, hash: (hashHi >>> 0)*0x100000000 + (hashLo>>>0) }); }   // js/olaf_wasm.js:80
+```
 
-- Браузер шлёт на сервер **event points**; сервер спаривает их в `(t1, hash)` по
-  апстримному `olaf_fp_extractor.c` и матчит против своего индекса.
-- Плюс: работает уже сейчас, ничего пересобирать не нужно; индекс и мэтчинг
-  логично живут на сервере.
-- Минус: на провод уходят EP, а не хэши (EP разрежены, объём умеренный).
+### 4.2. Профиль `server` (`src/olaf_wasm.c`)
 
-## 5. Что уже реализовано (Шаг 1: пробник, Путь C-совместимый)
+- Экспорт `__attribute__((export_name("olaf_wasm_set_profile")))` → `void olaf_wasm_set_profile(int on)` (`src/olaf_wasm.c:127`).
+- **Профиль `server`** = `olaf_config_default()` (step 128, 3 EPs per FP) — совпадает с конфигом серверного индекса. Выбор профиля фиксируется до инициализации; после init конфигурация неизменна (`src/olaf_wasm.c:85`).
+- **Профиль по умолчанию `demo`** = `olaf_config_esp_32()` — не изменён (совместимость со старыми демо).
 
-Три НОВЫХ файла в `wasm/` (существующий код не менялся):
+## 5. Совместимость хэшей с сервером подтверждена детерминированно (без LMDB)
 
-- `js/olaf_ingest.js` — модуль `startIngest({ endpoint, batchSize=64, flushMs=1000, onStatus })`:
-  микрофон → `createOlafNode(context, { visualize: true })` → накопление event points →
-  батч-отправка `POST` JSON `{ type:"event_points", sessionId, grid, eventPoints }` через `fetch`;
-  возвращает `{ stats, stop() }`.
-- `feasibility.html` — страница-пробник: поле endpoint (по умолчанию
-  `http://localhost:8787/match`), Start/Stop, счётчики, лог; публикует для
-  chrome-devtools-MCP: `window.__olaf_ingest_status`, `window.__olaf_ingest_error`,
-  `window.__olaf_ingest_stats`.
-- `tools/mock_match_server.mjs` — приёмник без зависимостей (порт 8787 / `argv[2]`),
-  `POST /match` → лог сводки + `200 {"ok":true,"received":…}`, CORS + `OPTIONS` preflight.
+Инструмент: **`node wasm/tools/fp_compat_check.mjs`** (`wasm/tools/fp_compat_check.mjs`). Он доказывает совместимость тремя независимыми способами и завершается `exit 0`, только если все три условия держатся; иначе — JSON-диагностика с разбивкой overlap / shift / alignment.
 
-### Как запускать
+Результаты (PASS):
+- **hash overlap = 413/425 (97%)** — доля общих хэшей относительно CLI-индекса, ≥ порога 95%.
+- **сдвиг `t1` = константа +1**, coverage ≈ 100% по однозначным парам; дрейфа нет. Негативный контроль (инъекция дрейфа) валит тест — т.е. проверка чувствительна именно к постоянному сдвигу, а не к разбросу.
+- **симуляция матчера** (`searchRange = 5`, `timeDiff = ((q_t1 - r_t1)) >> 2` в точности как `src/olaf_fp_matcher.c:147`) → **max bucket ≈ 417**, что ≫ `minMatchCount`.
 
-- Приёмник: `node tools/mock_match_server.mjs` (из `wasm/`).
-- Страница (браузер, ручная проверка): поднять статический HTTP-сервер с корнем в
-  `wasm/` (не `file://` — нужны ES-модули и AudioWorklet), открыть `/feasibility.html`,
-  нажать Start, разрешить микрофон; приёмник должен логировать батчи
-  `… N event points …` с N > 0.
+Известные и безобидные расхождения (не ломают мэтчинг):
+- **Сдвиг `t1` на +1 блок** относительно CLI. Причина — `olaf_stream_processor.c` и `olaf_wasm.c` размечают «блок» по-разному; матчер таллит пары по разностям (`(q_t1 - r_t1) >> 2`) в бакеты, поэтому постоянный сдвиг не влияет на `match_count`.
+- **Хвост**: CLI делает финальный сброс после цикла — `src/olaf_stream_processor.c:193-195` (`if(eventPoints != NULL && eventPointIndex > 0) olaf_fp_extractor_extract(...)`), а wasm — нет; это ~3% отпечатков на хвосте. Для окна 10 с / hop 5 с не критично. Опциональный follow-up: экспорт «flush» в wasm для точного паритета по хвосту.
 
-### Результаты проверки (Шаг 1)
+## 6. Клиент (браузер)
 
-- `node --check js/olaf_ingest.js` → PASS.
-- `node --check tools/mock_match_server.mjs` → PASS.
-- Smoke-тест транспорта (сервер + POST синтетического батча) → PASS:
-  ответ `{"ok":true,"received":"session smoke: 1 event points, 88 bytes"}`.
-- Браузерный прогон с реальным микрофоном — **не проверялся** (нет харнесса
-  chrome-devtools-MCP в окружении); результат не выдуман.
+- **`wasm/js/olaf_ingest.js`** — `startIngest({ endpoint, windowSeconds = 10, hopSeconds = 5, onStatus })`:
+  микрофон → Olaf в режиме экстракции (`profile: "server"`, `onFingerprint`) → накопление отпечатков →
+  скользящие окна **10 с / hop 5 с** → `POST <endpoint>` телом
+  ```json
+  { "type": "fingerprints", "sessionId": "...", "grid": {...}, "wallClockMs": 1234, "fingerprints": [ {"t1": ..., "hash": ...} ] }   // js/olaf_ingest.js:42
+  ```
+- **`wasm/js/olaf_windows.js`** — режет накопленные отпечатки на скользящие окна (используется `olaf_ingest.js`).
+- **`wasm/feasibility.html`** — страница-пробник; endpoint по умолчанию `http://localhost:8920/api/query-hashes` (`feasibility.html:23`), Start/Stop, счётчики.
 
-### Статус в git
+## 7. Сервер (REST)
 
-Файлы оставлены как **untracked**, коммит не делался (контракт шага его не требовал;
-в дереве присутствовало чужое изменение `AGENTS.md`, которое трогать нельзя).
-При необходимости:
-`git add feasibility.html js/olaf_ingest.js tools/mock_match_server.mjs` и коммит.
+Новый REST-эндпоинт **`POST /api/query-hashes[?identifier=<label>]`** с телом
+```json
+{ "fingerprints": [ {"t1": ..., "hash": ...} ] }   // cli/rest/olaf_rest.zig:6, olaf_cli_rest_backend.zig:174
+```
 
-## 6. Следующие шаги (при переезде в полный репозиторий Olaf)
+- Матчит переданные хэши по LMDB. Ядро — **`olaf_fp_matcher_match_hash(Olaf_FP_Matcher*, int queryFingerprintT1, uint64_t queryFingerprintHash)`** (`src/olaf_fp_matcher.h:89`, реализация `src/olaf_fp_matcher.c:218`).
+- Сессия — **`pub fn queryHashes(allocator, config, hashes) ![]Match`** (`cli/olaf_cli_session.zig:399`).
+- REST-слой (`cli/rest/`) остаётся std-only; биндинг к сессии — `LocalBackend.queryHashes` в `cli/olaf_cli_rest_backend.zig`.
 
-1. Подтянуть полный репозиторий (`src/`, `build.zig`, `dataset/`).
-2. Выбрать путь: A (пересборка wasm с экспортом экстрактора) — предпочтителен при
-   наличии Zig-тулчейна и контроле над `src/olaf_wasm.c`.
-3. Для Пути A — определить точный колбэк/экспорт с полями `(t1, hash)` и пересобрать
-   `zig build web`; перенести `js/olaf_ingest.js` на отправку уже готовых отпечатков.
-4. Для Пути C — реализовать серверный спариватель по `olaf_fp_extractor.c` и мэтчер;
-   браузерный пробник уже готов.
-5. Проверка: `node olaf_wasm_test.mjs` (требует `ffmpeg` + `dataset`), затем
-   браузерный прогон `/feasibility.html` через chrome-devtools-MCP.
+## 8. Эксплуатация (живой режим)
 
-## 7. Ключевые ссылки на код
+- Сервер использует **`fragment_duration_in_seconds: 10`** — индекс состоит из 10-с клипов прямого эфира, id = unix-время момента записи.
+- Рекомендован **`min_match_count ≈ 20`** для живого режима (комфортно выше `olaf_config_default().minMatchCount`).
+- Сигнал доходит до клиента через спутник с задержкой ~30 с, поэтому к моменту запроса клипа он уже проиндексирован — окно «запрос раньше индекса» не возникает.
 
-- `js/olaf_wasm.js:21-107` — ABI: `instantiateOlaf`, колбэки `env`, `match(samples)`.
-- `js/olaf_wasm.js:61-80` — `olaf_fp_matcher_callback`, `olaf_spectrum_callback`,
-  `olaf_event_point_callback`.
-- `js/olaf_processor.js:36-46` — создание Olaf с `visualize`, проброс колбэков в порт.
-- `js/olaf_processor.js:88-106` — формирование сообщения `{type:"spectrum", eventPoints}`.
-- `js/olaf.js:4-17` — `createOlafNode` (fetch wasm + `addModule`).
-- `spectrogram.html:129-156` — работа с grid/spectrum/eventPoints/match.
-- `spectrogram.html:178-186` — захват микрофона с корректными constraints.
-- `olaf_wasm_test.mjs` — эталон использования ABI в Node (референс id 1051039).
-- Апстрим: `src/olaf_wasm.c`, `src/olaf_fp_extractor.c/.h`, `src/olaf_ep_extractor.c/.h`,
-  `src/olaf_config.c/.h`.
+## 9. Статус проверок (честно)
+
+- **Локальные node-тесты PASS**: `wasm/olaf_wasm_test.mjs`, `wasm/olaf_fp_extract_test.mjs`,
+  `wasm/olaf_windows_test.mjs`, `node wasm/tools/fp_compat_check.mjs`.
+- **`zig build`**, **`zig build -Dcore=true`** и REST unit-тесты PASS (кроме предсуществующего Windows-only провала `listenExclusive`).
+- **Живой HTTP e2e НЕ выполнялся в этом окружении.** Причина: LMDB под Windows падает на `mdb_env_open` (`ERROR_INVALID_NAME`) — это предсуществующая проблема, не связанная с текущими правками. Живой e2e выполняется на боевом Linux-сервере; для этого есть пробник **`wasm/tools/query_hashes_probe.mjs <baseUrl> [audio]`**.
+  > Важно: в этом документе и отчётах НЕ утверждается, что живой e2e пройден — он не прогонялся здесь.
+
+## 10. Разделение на upstream-able vs форк-специфичное (минимизация расхождения с upstream)
+
+**Upstream-able** (чистое расширение ABI/матчера, не зависит от особенностей форка):
+- колбэк отпечатков `olaf_fp_callback(timeIndex1, hashLo, hashHi)` + экспорт `olaf_wasm_set_extract`;
+- ядро матчинга по хэшу **`olaf_fp_matcher_match_hash(...)`** (`src/olaf_fp_matcher.h/.c`).
+
+**Форк-специфичное** (зависит от инфраструктуры этого проекта):
+- профиль `server` — экспорт `olaf_wasm_set_profile`;
+- REST-эндпоинт `/api/query-hashes`, сессия `queryHashes`.
+
+Разделение позволяет держать ядро совместимым с upstream, а «серверную» обвязку изолировать в слое CLI/REST.
+
+## 11. Ключевые ссылки на код (текущее состояние)
+
+- `src/olaf_wasm.c:78` — импорт `olaf_fp_callback`; `:114` экспорт `set_extract`; `:127` экспорт `set_profile`.
+- `wasm/js/olaf_wasm.js:80,90,94` — JS ABI (`onFingerprint`, `profile:"server" → set_profile(1)`, `set_extract`).
+- `src/olaf_fp_matcher.h:89` / `.c:218` — `olaf_fp_matcher_match_hash`.
+- `cli/rest/olaf_rest.zig:6, olaf_cli_rest_api.zig:23` — маршрут `/api/query-hashes`; `cli/olaf_cli_rest_backend.zig:169` — биндинг.
+- `wasm/js/olaf_ingest.js`, `wasm/js/olaf_windows.js`, `wasm/tools/fp_compat_check.mjs`, `wasm/tools/query_hashes_probe.mjs`.
