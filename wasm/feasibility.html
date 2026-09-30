@@ -15,19 +15,19 @@
 <body>
 <main>
 	<h1>Olaf ingest probe</h1>
-	<p class="lead">Captures the microphone, runs the Olaf worklet with visualisation on, and ships every
-	event point Olaf extracts to an external matching server. The current <code>olaf.wasm</code> exposes no
-	fingerprint/hash extractor, so event points are the richest payload it can emit.</p>
+	<p class="lead">Captures the microphone, runs Olaf through its worklet with the server profile to extract
+	acoustic fingerprints (t1 + hash), and ships them in 10-second sliding windows (5 s hop) to an external
+	matching server.</p>
 
 	<div class="controls">
-		<label>Endpoint <input type="text" id="endpoint" value="http://localhost:8787/match"></label>
+		<label>Endpoint <input type="text" id="endpoint" value="http://localhost:8920/api/query-hashes"></label>
 		<button id="start">Start</button>
 		<button id="stop" class="secondary">Stop</button>
 	</div>
 
 	<div class="panel">
-		<div class="stat"><div class="label">Event points sent</div><div class="value" id="sent">0</div></div>
-		<div class="stat"><div class="label">Batches</div><div class="value" id="batches">0</div></div>
+		<div class="stat"><div class="label">Fingerprints sent</div><div class="value" id="sent">0</div></div>
+		<div class="stat"><div class="label">Windows</div><div class="value" id="windows">0</div></div>
 		<div class="stat"><div class="label">Errors</div><div class="value" id="errors">0</div></div>
 	</div>
 
@@ -63,7 +63,7 @@
 					if (ingest) {
 						window.__olaf_ingest_stats = ingest.stats;
 						$("sent").textContent = ingest.stats.sent;
-						$("batches").textContent = ingest.stats.batches;
+						$("windows").textContent = ingest.stats.windows;
 						$("errors").textContent = ingest.stats.errors;
 					}
 				},
