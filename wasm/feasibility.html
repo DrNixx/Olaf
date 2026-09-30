@@ -10,6 +10,8 @@
 		.controls { display: flex; gap: 0.6em; align-items: center; flex-wrap: wrap; margin-bottom: 1em; }
 		input[type="text"] { font-size: 0.95em; padding: 0.4em; min-width: 26em; }
 		.log { height: 12em; }
+		.match { margin: 0.6em 0; font-family: monospace; }
+		pre { white-space: pre-wrap; word-break: break-all; }
 	</style>
 </head>
 <body>
@@ -28,8 +30,12 @@
 	<div class="panel">
 		<div class="stat"><div class="label">Fingerprints sent</div><div class="value" id="sent">0</div></div>
 		<div class="stat"><div class="label">Windows</div><div class="value" id="windows">0</div></div>
+		<div class="stat"><div class="label">Matches</div><div class="value" id="matches">0</div></div>
 		<div class="stat"><div class="label">Errors</div><div class="value" id="errors">0</div></div>
 	</div>
+
+	<div id="lastmatch" class="match">Last match: —</div>
+	<details><summary>Last raw response</summary><pre id="rawbody">—</pre></details>
 
 	<div id="log" class="log"></div>
 </main>
@@ -52,6 +58,11 @@
 		logEl.scrollTop = logEl.scrollHeight;
 	}
 
+	// A ten-second broadcast clip is labelled with its Unix start time.
+	function formatMatchId(id) {
+		return id >= 1e9 ? id + " (" + new Date(id * 1000).toLocaleString() + ")" : String(id);
+	}
+
 	let ingest = null;
 
 	$("start").addEventListener("click", async () => {
@@ -60,12 +71,17 @@
 				endpoint: $("endpoint").value,
 				onStatus: (message) => {
 					log(message);
-					if (ingest) {
-						window.__olaf_ingest_stats = ingest.stats;
-						$("sent").textContent = ingest.stats.sent;
-						$("windows").textContent = ingest.stats.windows;
-						$("errors").textContent = ingest.stats.errors;
+					if (!ingest) return;
+					const stats = ingest.stats;
+					window.__olaf_ingest_stats = stats;
+					$("sent").textContent = stats.sent;
+					$("windows").textContent = stats.windows;
+					$("matches").textContent = stats.matches;
+					$("errors").textContent = stats.errors;
+					if (stats.lastMatch) {
+						$("lastmatch").textContent = "Last match: " + formatMatchId(stats.lastMatch.id) + ", match_count " + stats.lastMatch.match_count + (stats.lastMatch.path ? ", " + stats.lastMatch.path : "");
 					}
+					$("rawbody").textContent = stats.lastResponse || "—";
 				},
 			});
 		} catch (err) {
