@@ -73,10 +73,16 @@ void olaf_spectrum_callback(int blockIndex, const float* magnitudes, int bins);
 __attribute__((import_module("env"), import_name("olaf_event_point_callback")))
 void olaf_event_point_callback(int timeIndex, int frequencyBin, float magnitude);
 
+/** Fingerprint extraction: each new fingerprint (only when extract is set). */
+__attribute__((import_module("env"), import_name("olaf_fp_callback")))
+void olaf_fp_callback(int timeIndex1, uint32_t hashLo, uint32_t hashHi);
+
 static bool visualize = false;
+static bool extract = false;
+static bool server_profile = false;
 
 static void olaf_wasm_init(void){
-	state.config = olaf_config_esp_32();
+	state.config = server_profile ? olaf_config_default() : olaf_config_esp_32();
 
 	state.fftSetup = pffft_new_setup(state.config->audioBlockSize,PFFFT_REAL);
 	state.fft_in = (float*) pffft_aligned_malloc(state.config->audioBlockSize*4);//fft input
@@ -98,6 +104,30 @@ static void olaf_wasm_init(void){
 __attribute__((export_name("olaf_wasm_set_visualize")))
 void olaf_wasm_set_visualize(int on){
 	visualize = on != 0;
+}
+
+/**
+ * Enables (1) or disables (0) reporting extracted fingerprints through
+ * olaf_fp_callback. When enabled the built-in matcher is skipped: the
+ * fingerprints are meant for an external matcher.
+ */
+__attribute__((export_name("olaf_wasm_set_extract")))
+void olaf_wasm_set_extract(int on){
+	extract = on != 0;
+}
+
+/**
+ * Selects the fingerprint profile before initialization: 1 enables the server
+ * profile (olaf_config_default(): step 128, 3 EPs per fingerprint, matching
+ * the server index), 0 keeps the ESP32/demo profile (olaf_config_esp_32()).
+ * Call it before the first olaf_fingerprint_match / olaf_wasm_describe: the
+ * configuration is fixed once initialized. The server profile always reports
+ * fingerprints instead of matching in-module.
+ */
+__attribute__((export_name("olaf_wasm_set_profile")))
+void olaf_wasm_set_profile(int on){
+	server_profile = on != 0;
+	if(server_profile) extract = true;
 }
 
 /**
@@ -178,8 +208,19 @@ int olaf_fingerprint_match(float * audio_buffer, size_t audio_buffer_size){
 				state.fingerprints = olaf_fp_extractor_extract(state.fp_extractor,state.eventPoints,state.audio_block_index);
 
 				if(state.fingerprints->fingerprintIndex > 0){
-					//results are returned via a callback
-					olaf_fp_matcher_match(state.fp_matcher,state.fingerprints);
+					if(server_profile || extract){
+						//report real (t1, hash) pairs and hand the buffer back for reuse:
+						//the matcher used to be the one resetting fingerprintIndex
+						for(size_t i = 0; i < state.fingerprints->fingerprintIndex; i++){
+							struct fingerprint f = state.fingerprints->fingerprints[i];
+							uint64_t hash = olaf_fp_extractor_hash(f);
+							olaf_fp_callback(f.timeIndex1, (uint32_t) hash, (uint32_t) (hash >> 32));
+						}
+						state.fingerprints->fingerprintIndex = 0;
+					}else{
+						//results are returned via a callback
+						olaf_fp_matcher_match(state.fp_matcher,state.fingerprints);
+					}
 				}
 			}
 

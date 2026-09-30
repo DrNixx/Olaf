@@ -1,7 +1,8 @@
 // Creates the Olaf AudioWorklet node. The wasm module is fetched here, on the
 // main thread (worklets cannot fetch), and handed to the processor. With
-// visualize the node also posts spectra and event points (see olaf_processor.js).
-export async function createOlafNode(audioContext, { visualize = false } = {}) {
+// visualize the node also posts spectra and event points; with extract (or the
+// server profile) it posts extracted fingerprints (see olaf_processor.js).
+export async function createOlafNode(audioContext, { visualize = false, extract = false, profile = "demo" } = {}) {
 	const [wasmBytes] = await Promise.all([
 		fetch(new URL("olaf.wasm", import.meta.url)).then((response) => {
 			if (!response.ok) throw new Error("fetching olaf.wasm failed: " + response.status + " (run `zig build web`)");
@@ -12,6 +13,6 @@ export async function createOlafNode(audioContext, { visualize = false } = {}) {
 	return new AudioWorkletNode(audioContext, "olaf-processor", {
 		numberOfInputs: 1,
 		numberOfOutputs: 0,
-		processorOptions: { wasmBytes, visualize },
+		processorOptions: { wasmBytes, visualize, extract, profile },
 	});
 }

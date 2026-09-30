@@ -1,7 +1,8 @@
 // The Olaf AudioWorklet: resamples the input to 16kHz and matches it against
 // the fingerprints compiled into olaf.wasm. Create it with createOlafNode (olaf.js).
 // With processorOptions.visualize it also posts the spectra and event points
-// ({type: "spectrum"}) on Olaf's time-frequency grid ({type: "grid"}).
+// ({type: "spectrum"}) on Olaf's time-frequency grid ({type: "grid"}); with extract
+// or profile "server" it posts extracted fingerprints ({type: "fingerprints"}).
 import { create } from "./libsamplerate.worklet.js";
 import { instantiateOlaf } from "./olaf_wasm.js";
 
@@ -30,14 +31,19 @@ class OlafProcessor extends AudioWorkletProcessor {
 		}
 
 		const visualize = options.processorOptions.visualize === true;
+		const extract = options.processorOptions.extract === true || options.processorOptions.profile === "server";
+		const profile = options.processorOptions.profile ?? "demo";
 		this.spectra = [];
 		this.eventPoints = [];
+		this.fingerprints = [];
 
 		instantiateOlaf(options.processorOptions.wasmBytes, {
 			onMatch: (match) => this.port.postMessage(match),
 			onPrint: (text) => text.trim() && status(text.trim()),
 			onSpectrum: visualize ? (blockIndex, magnitudes) => this.spectra.push({ blockIndex, magnitudes }) : null,
 			onEventPoint: visualize ? (ep) => this.eventPoints.push(ep) : null,
+			onFingerprint: extract ? (fp) => this.fingerprints.push(fp) : null,
+			profile,
 		})
 			.then((olaf) => {
 				this.olaf = olaf;
@@ -82,6 +88,7 @@ class OlafProcessor extends AudioWorkletProcessor {
 		}
 
 		this.postSpectra();
+		this.postFingerprints();
 		return true;
 	}
 
@@ -103,6 +110,15 @@ class OlafProcessor extends AudioWorkletProcessor {
 		}, [magnitudes.buffer]);
 		this.spectra = [];
 		this.eventPoints = [];
+	}
+
+	//Posts the fingerprints extracted since the last render quantum
+	postFingerprints() {
+		if (this.fingerprints.length === 0) {
+			return;
+		}
+		this.port.postMessage({ type: "fingerprints", fingerprints: this.fingerprints });
+		this.fingerprints = [];
 	}
 }
 

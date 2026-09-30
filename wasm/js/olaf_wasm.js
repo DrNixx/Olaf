@@ -18,7 +18,7 @@ function decode(bytes) {
 // time-frequency grid, described by the returned grid.
 // Returns {match, grid}: match(samples) feeds mono 16kHz samples and returns the
 // audio block index; grid is {sampleRate, blockSize, stepSize, epLatencyBlocks}.
-export async function instantiateOlaf(wasmBytes, { onMatch, onPrint = () => {}, onSpectrum = null, onEventPoint = null }) {
+export async function instantiateOlaf(wasmBytes, { onMatch, onPrint = () => {}, onSpectrum = null, onEventPoint = null, onFingerprint = null, profile = "demo" }) {
 	let memory = null;
 
 	const cString = (ptr) => {
@@ -77,15 +77,21 @@ export async function instantiateOlaf(wasmBytes, { onMatch, onPrint = () => {}, 
 		olaf_event_point_callback(timeIndex, frequencyBin, magnitude) {
 			onEventPoint?.({ time_index: timeIndex, frequency_bin: frequencyBin, magnitude });
 		},
+		olaf_fp_callback(timeIndex1, hashLo, hashHi) {
+			// wasm i32 params arrive signed; reinterpret as unsigned before combining
+			onFingerprint?.({ time_index: timeIndex1, hash: (hashHi >>> 0) * 0x100000000 + (hashLo >>> 0) });
+		},
 	};
 
 	const { instance } = await WebAssembly.instantiate(wasmBytes, { wasi_snapshot_preview1: wasi, env });
 	const olaf = instance.exports;
 	memory = olaf.memory;
 	olaf._initialize();
+	if (profile === "server") olaf.olaf_wasm_set_profile(1);
 	const inputPtr = olaf.malloc(INPUT_CAPACITY * 4);
 
 	if (onSpectrum || onEventPoint) olaf.olaf_wasm_set_visualize(1);
+	if (onFingerprint) olaf.olaf_wasm_set_extract(1);
 	const gridPtr = olaf.malloc(4 * 4);
 	olaf.olaf_wasm_describe(gridPtr);
 	const [sampleRate, blockSize, stepSize, epLatencyBlocks] = new Int32Array(memory.buffer, gridPtr, 4);
