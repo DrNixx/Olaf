@@ -1,0 +1,85 @@
+<!DOCTYPE HTML>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Olaf ingest probe</title>
+	<link rel="stylesheet" href="olaf_demo.css">
+	<style>
+		main { max-width: 900px; }
+		.controls { display: flex; gap: 0.6em; align-items: center; flex-wrap: wrap; margin-bottom: 1em; }
+		input[type="text"] { font-size: 0.95em; padding: 0.4em; min-width: 26em; }
+		.log { height: 12em; }
+	</style>
+</head>
+<body>
+<main>
+	<h1>Olaf ingest probe</h1>
+	<p class="lead">Captures the microphone, runs the Olaf worklet with visualisation on, and ships every
+	event point Olaf extracts to an external matching server. The current <code>olaf.wasm</code> exposes no
+	fingerprint/hash extractor, so event points are the richest payload it can emit.</p>
+
+	<div class="controls">
+		<label>Endpoint <input type="text" id="endpoint" value="http://localhost:8787/match"></label>
+		<button id="start">Start</button>
+		<button id="stop" class="secondary">Stop</button>
+	</div>
+
+	<div class="panel">
+		<div class="stat"><div class="label">Event points sent</div><div class="value" id="sent">0</div></div>
+		<div class="stat"><div class="label">Batches</div><div class="value" id="batches">0</div></div>
+		<div class="stat"><div class="label">Errors</div><div class="value" id="errors">0</div></div>
+	</div>
+
+	<div id="log" class="log"></div>
+</main>
+
+<script type="module">
+	import { startIngest } from "./js/olaf_ingest.js";
+
+	// State an automated check (chrome devtools MCP) reads via evaluate_script
+	window.__olaf_ingest_status = "idle";
+	window.__olaf_ingest_error = null;
+	window.__olaf_ingest_stats = null;
+
+	const $ = (id) => document.getElementById(id);
+	const logEl = $("log");
+	function log(message) {
+		window.__olaf_ingest_status = message;
+		const line = document.createElement("div");
+		line.textContent = message;
+		logEl.appendChild(line);
+		logEl.scrollTop = logEl.scrollHeight;
+	}
+
+	let ingest = null;
+
+	$("start").addEventListener("click", async () => {
+		try {
+			ingest = await startIngest({
+				endpoint: $("endpoint").value,
+				onStatus: (message) => {
+					log(message);
+					if (ingest) {
+						window.__olaf_ingest_stats = ingest.stats;
+						$("sent").textContent = ingest.stats.sent;
+						$("batches").textContent = ingest.stats.batches;
+						$("errors").textContent = ingest.stats.errors;
+					}
+				},
+			});
+		} catch (err) {
+			window.__olaf_ingest_error = String(err);
+			log("start failed: " + err);
+		}
+	});
+
+	$("stop").addEventListener("click", async () => {
+		if (!ingest) return;
+		await ingest.stop();
+		ingest = null;
+		log("stopped");
+	});
+</script>
+</body>
+</html>
